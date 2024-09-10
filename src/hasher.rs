@@ -1,7 +1,8 @@
+use rkyv::{Archive, Serialize};
 use siphasher::sip::SipHasher13;
 use std::hash::{BuildHasher, Hasher};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Archive)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CloneBuildHasher<H: Hasher + Clone> {
     hasher: H,
@@ -27,6 +28,7 @@ impl<H: Hasher + Clone> BuildHasher for CloneBuildHasher<H> {
 /// `DefaultHasher` has a faster `build_hasher` than `std::collections::hash_map::RandomState` or `SipHasher13`.
 /// This is important because `build_hasher` is called once for every actual hash.
 pub type DefaultHasher = CloneBuildHasher<RandomDefaultHasher>;
+pub type ArchivedDefaultHashed = ArchivedCloneBuildHasher<ArchivedRandomDefaultHasher>;
 
 impl DefaultHasher {
     pub fn seeded(seed: &[u8; 16]) -> Self {
@@ -36,7 +38,7 @@ impl DefaultHasher {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Archive)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RandomDefaultHasher(SipHasher13);
 

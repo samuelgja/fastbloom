@@ -1,3 +1,4 @@
+use rkyv::rend::u64_le;
 use std::ops::{AddAssign, BitAndAssign, BitOrAssign};
 use wide::{u64x2, u64x4};
 
@@ -57,6 +58,11 @@ impl SparseHash for u64 {
         data[0] |= x;
     }
 
+    #[inline]
+    fn matches_archived(data: &[u64_le], x: Self) -> bool {
+        (data[0] & x) == x
+    }
+
     /// "Double hashing" produces a new hash efficiently from two orignal hashes.
     ///
     /// Modified from <https://www.eecs.harvard.edu/~michaelm/postscripts/rsa2008.pdf>.
@@ -87,6 +93,13 @@ impl SparseHash for u64x4 {
         let t = unsafe { std::mem::transmute::<&[u64], &[Self]>(data) };
         (t[0] & x) == x
     }
+
+    #[inline]
+    fn matches_archived(data: &[u64_le], x: Self) -> bool {
+        let t = unsafe { std::mem::transmute::<&[u64_le], &[Self]>(data) };
+        (t[0] & x) == x
+    }
+
     #[inline]
     fn set(data: &mut [u64], x: Self) {
         let t = unsafe { std::mem::transmute::<&mut [u64], &mut [Self]>(data) };
@@ -108,6 +121,13 @@ impl SparseHash for u64x2 {
         let t = unsafe { std::mem::transmute::<&[u64], &[Self]>(data) };
         (t[0] & x) == x
     }
+
+    #[inline]
+    fn matches_archived(data: &[u64_le], x: Self) -> bool {
+        let t = unsafe { std::mem::transmute::<&[u64_le], &[Self]>(data) };
+        (t[0] & x) == x
+    }
+
     #[inline]
     fn set(data: &mut [u64], x: Self) {
         let t = unsafe { std::mem::transmute::<&mut [u64], &mut [Self]>(data) };
@@ -119,6 +139,7 @@ pub(crate) trait SparseHash: Sized + AddAssign + Copy + BitAndAssign + BitOrAssi
     fn h1(h1: &mut u64, h2: u64) -> Self;
     fn h2(h2: u64) -> Self;
     fn matches(data: &[u64], x: Self) -> bool;
+    fn matches_archived(data: &[u64_le], x: Self) -> bool;
     fn set(data: &mut [u64], x: Self);
     #[inline]
     fn next_hash(h1: &mut Self, h2: Self) -> Self {

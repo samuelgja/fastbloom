@@ -9,6 +9,7 @@ pub use builder::{BuilderWithBits, BuilderWithFalsePositiveRate};
 mod bit_vector;
 use bit_vector::BlockedBitVec;
 mod sparse_hash;
+use rkyv::{Archive, Archived, Serialize};
 use sparse_hash::SparseHash;
 use wide::{u64x2, u64x4};
 
@@ -49,8 +50,9 @@ use wide::{u64x2, u64x4};
 ///     .hasher(RandomState::default())
 ///     .items(["42", "🦀"]);
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Archive)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+
 pub struct BloomFilter<const BLOCK_SIZE_BITS: usize = 512, S = DefaultHasher> {
     bits: BlockedBitVec<BLOCK_SIZE_BITS>,
     /// The total target hashes per item that is specified by user or optimized to maximize accuracy
@@ -148,6 +150,110 @@ const fn validate_block_size(size: usize) -> usize {
     match size {
         64 | 128 | 256 | 512 => size,
         _ => panic!("The only BLOCK_SIZE's allowed are 64, 128, 256, and 512."),
+    }
+}
+
+#[inline]
+pub(crate) fn get_orginal_hashes_archived(
+    hasher: &impl BuildHasher,
+    val: &(impl Hash + ?Sized),
+) -> [u64; 2] {
+    let mut state = hasher.build_hasher();
+    val.hash(&mut state);
+    let h1 = state.finish();
+    let h2 = h1.wrapping_shr(32).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95); // 0xffff_ffff_ffff_ffff / 0x517c_c1b7_2722_0a95 = π
+    [h1, h2]
+}
+
+impl<const BLOCK_SIZE_BITS: usize, S> ArchivedBloomFilter<BLOCK_SIZE_BITS, S>
+where
+    S: BuildHasher + Archive,
+    S::Archived: BuildHasher,
+{
+    const BIT_INDEX_MASK: u64 = (validate_block_size(BLOCK_SIZE_BITS) - 1) as u64;
+
+    #[inline]
+    fn bit_index(hash1: &mut u64, hash2: u64) -> usize {
+        let h = u64::next_hash(hash1, hash2);
+        (h & Self::BIT_INDEX_MASK) as usize
+    }
+
+    /// Returns the number of hashes per item.
+    #[inline]
+    pub fn num_hashes(&self) -> u32 {
+        self.target_hashes.to_native() as u32
+    }
+
+    /// Returns the total number of in-memory bits supporting the Bloom filter.
+    pub fn num_bits(&self) -> usize {
+        self.num_blocks() * BLOCK_SIZE_BITS
+    }
+
+    /// Returns the total number of in-memory blocks supporting the Bloom filter.
+    /// Each block is `BLOCK_SIZE_BITS` bits.
+    pub fn num_blocks(&self) -> usize {
+        self.bits.num_blocks()
+    }
+
+    /// Checks if an element is possibly in the Bloom filter.
+    ///
+    /// # Returns
+    ///
+    /// `true` if the item is possibly in the Bloom filter, `false` otherwise.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fastbloom::BloomFilter;
+    ///
+    /// let bloom = BloomFilter::with_num_bits(1024).items([1, 2, 3]);
+    /// assert!(bloom.contains(&1));
+    /// ```
+    #[inline]
+    pub fn contains(&self, val: &(impl Hash + ?Sized)) -> bool {
+        let [mut h1, h2] = get_orginal_hashes(&self.hasher, val);
+        (0..self.num_hashes.into()).into_iter().all(|_| {
+            // Set bits the traditional way--1 bit per composed hash
+            let index = block_index(self.num_blocks(), h1);
+            let block = &self.bits.get_block(index);
+            BlockedBitVec::<BLOCK_SIZE_BITS>::check_for_block_archived(
+                block,
+                Self::bit_index(&mut h1, h2),
+            )
+        }) && (if self.num_rounds.is_some() {
+            let num_rounds = self.num_rounds.unwrap().to_native();
+            // Set many bits in parallel using a sparse hash
+            let index = block_index(self.num_blocks(), h1);
+            let block = &self.bits.get_block(index);
+            match BLOCK_SIZE_BITS {
+                128 => {
+                    let mut hashes_1 = u64x2::h1(&mut h1, h2);
+                    let hashes_2 = u64x2::h2(h2);
+                    let data = u64x2::sparse_hash(&mut hashes_1, hashes_2, num_rounds);
+                    u64x2::matches_archived(block, data)
+                }
+                256 => {
+                    let mut hashes_1 = u64x4::h1(&mut h1, h2);
+                    let hashes_2 = u64x4::h2(h2);
+                    let data = u64x4::sparse_hash(&mut hashes_1, hashes_2, num_rounds);
+                    u64x4::matches_archived(block, data)
+                }
+                512 => {
+                    let mut hashes_1 = u64x4::h1(&mut h1, h2);
+                    let hashes_2 = u64x4::h2(h2);
+                    (0..2).all(|i| {
+                        let data = u64x4::sparse_hash(&mut hashes_1, hashes_2, num_rounds);
+                        u64x4::matches_archived(&block[4 * i..], data)
+                    })
+                }
+                _ => (0..block.len()).all(|i| {
+                    let data = u64::sparse_hash(&mut h1, h2, num_rounds);
+                    (block[i] & data) == data
+                }),
+            }
+        } else {
+            true
+        })
     }
 }
 

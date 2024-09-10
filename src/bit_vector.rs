@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use rkyv::{rend::u64_le, Archive, Serialize};
+
 /// The number of bits in the bit mask that is used to index a u64's bits.
 ///
 /// u64's are used to store 64 bits, so the index ranges from 0 to 63.
@@ -19,7 +21,7 @@ const BIT_MASK: u64 = (1 << BIT_MASK_LEN) - 1;
 ///
 /// Indexing a block is also efficient, since it can be done with bit operators because
 /// the size of a block is a power of 2.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Archive)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockedBitVec<const BLOCK_SIZE_BITS: usize> {
     bits: Vec<u64>,
@@ -81,6 +83,13 @@ impl<const BLOCK_SIZE_BITS: usize> BlockedBitVec<BLOCK_SIZE_BITS> {
         block[index] & bit > 0
     }
 
+    /// Returns true if the `bit_index`th in the block is 1.
+    #[inline]
+    pub fn check_for_block_archived(block: &[u64_le], bit_index: usize) -> bool {
+        let (index, bit) = Self::coordinate(bit_index);
+        block[index] & bit > 0
+    }
+
     #[inline]
     pub fn as_slice(&self) -> &[u64] {
         &self.bits
@@ -91,6 +100,30 @@ impl<const BLOCK_SIZE_BITS: usize> BlockedBitVec<BLOCK_SIZE_BITS> {
         for i in 0..self.bits.len() {
             self.bits[i] = 0;
         }
+    }
+}
+
+impl<const BLOCK_SIZE_BITS: usize> ArchivedBlockedBitVec<BLOCK_SIZE_BITS> {
+    /// Block size in u64s
+    const BLOCK_SIZE: usize = BLOCK_SIZE_BITS / 64;
+    /// Used to shift u64 index
+    const LOG2_BLOCK_SIZE: u32 = u32::ilog2(Self::BLOCK_SIZE as u32);
+    /// The number of blocks in the `BlockedBitVector`
+    #[inline]
+    pub fn num_blocks(&self) -> usize {
+        self.bits.len() >> Self::LOG2_BLOCK_SIZE
+    }
+    /// Returns a reference to the raw data for the `i`th block in the `BlockedBitVec`
+    #[inline]
+    pub fn get_block(&self, i: usize) -> &[u64_le] {
+        let range = Self::block_range(i);
+        &self.bits[range]
+    }
+
+    #[inline]
+    const fn block_range(index: usize) -> Range<usize> {
+        let block_index = index * Self::BLOCK_SIZE;
+        block_index..(block_index + Self::BLOCK_SIZE)
     }
 }
 
